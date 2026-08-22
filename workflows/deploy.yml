@@ -1,0 +1,65 @@
+name: Build and Deploy to EC2 via Bastion
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push Docker image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $REGISTRY/$REPOSITORY:$IMAGE_TAG -t $REGISTRY/$REPOSITORY:latest .
+          docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
+          docker push $REGISTRY/$REPOSITORY:latest
+
+      - name: Deploy to Private EC2 via Bastion Host
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+        run: |
+          mkdir -p ~/.ssh
+
+          # Write SSH keys for both servers
+          echo "${{ secrets.BASTION_SSH_KEY }}" > ~/.ssh/bastion_key
+          echo "${{ secrets.APP_SSH_KEY }}" > ~/.ssh/app_key
+          chmod 600 ~/.ssh/bastion_key ~/.ssh/app_key
+
+          # Connect to App server through Bastion and update container
+          ssh -o StrictHostKeyChecking=no \
+              -o "ProxyCommand=ssh -o StrictHostKeyChecking=no -i ~/.ssh/bastion_key -W %h:%p ubuntu@${{ secrets.BASTION_HOST }}" \
+              -i ~/.ssh/app_key \
+              ubuntu@${{ secrets.APP_PRIVATE_IP }} << EOF
+                # Log in to ECR on target instance
+                aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin $REGISTRY
+
+                # Pull the newest image
+                docker pull $REGISTRY/$REPOSITORY:latest
+
+                # Stop and clean up old container if running
+                docker stop my-app || true
+                docker rm my-app || true
+
+                # Run the updated container
+                docker run -d --name my-app --restart always -p 80:80 $REGISTRY/$REPOSITORY:latest
+          EOF
