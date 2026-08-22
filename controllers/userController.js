@@ -1,4 +1,5 @@
 const User = require("../models/user");
+const logger = require("../config/logger");
 
 const createNewUser = async (req, res, next) => {
   try {
@@ -27,7 +28,7 @@ const createNewUser = async (req, res, next) => {
       message: "User created successfully",
     });
   } catch (error) {
-    console.log(error);
+    logger.error(`Error creating user: ${error.message}`, { stack: error.stack });
     return next(error);
   }
 };
@@ -41,7 +42,7 @@ const getAllUsers = async (req, res, next) => {
       users,
     });
   } catch (error) {
-    console.log(error);
+    logger.error(`Error fetching users: ${error.message}`, { stack: error.stack });
     return next(error);
   }
 };

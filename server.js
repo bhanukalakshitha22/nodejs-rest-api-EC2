@@ -5,6 +5,10 @@ require("dotenv").config();
 const connectDB = require("./db/db");
 const errorHandler = require("./middlewares/errorhandler");
 const userRoutes = require("./routes/userRoutes");
+const logger = require("./config/logger");
+
+const dns = require('dns');
+dns.setServers(['8.8.8.8']);
 
 const app = express();
 const port = process.env.PORT || 8000;
@@ -16,7 +20,7 @@ app.use(express.json());
 connectDB();
 
 //routes
-app.use("/api/users", userRoutes);
+app.use("/api/user", userRoutes);
 
 app.use("/api/products", (req, res) => {
   return res.status(200).json({
@@ -30,4 +34,5 @@ app.use(errorHandler);
 //listen to the server
 app.listen(port, () => {
   console.log(`Server is running on port: ${port}`);
+  logger.info(`Server is running on port: ${port}`);
 });
