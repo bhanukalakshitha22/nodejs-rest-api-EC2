@@ -19,6 +19,11 @@ app.use(express.json());
 //connect to the database
 connectDB();
 
+//health check
+app.get("/health", (req, res) => {
+  return res.status(200).json({ status: "ok" });
+});
+
 //routes
 app.use("/api/user", userRoutes);
 

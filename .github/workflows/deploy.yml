@@ -1,18 +1,18 @@
-name: Build and Deploy to EC2 via Bastion
+name: Build and Deploy to Multi-Port EC2
 
 on:
   push:
     branches: [ "main" ]
 
 jobs:
-  build-and-deploy:
+  deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -23,43 +23,40 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build, tag, and push Docker image
+      - name: Build, Tag, and Push Docker Image
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
-          IMAGE_TAG: ${{ github.sha }}
+          IMAGE_TAG: latest
         run: |
-          docker build -t $REGISTRY/$REPOSITORY:$IMAGE_TAG -t $REGISTRY/$REPOSITORY:latest .
+          docker build -t $REGISTRY/$REPOSITORY:$IMAGE_TAG .
           docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
-          docker push $REGISTRY/$REPOSITORY:latest
 
-      - name: Deploy to Private EC2 via Bastion Host
+      - name: Deploy Both Containers to EC2 via SSH
         env:
           REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           REPOSITORY: ${{ secrets.ECR_REPOSITORY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
         run: |
           mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
 
-          # Write SSH keys for both servers
-          echo "${{ secrets.BASTION_SSH_KEY }}" > ~/.ssh/bastion_key
-          echo "${{ secrets.APP_SSH_KEY }}" > ~/.ssh/app_key
-          chmod 600 ~/.ssh/bastion_key ~/.ssh/app_key
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << EOF
+            # Log in to ECR inside the EC2 instance
+            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $REGISTRY
 
-          # Connect to App server through Bastion and update container
-          ssh -o StrictHostKeyChecking=no \
-              -o "ProxyCommand=ssh -o StrictHostKeyChecking=no -i ~/.ssh/bastion_key -W %h:%p ubuntu@${{ secrets.BASTION_HOST }}" \
-              -i ~/.ssh/app_key \
-              ubuntu@${{ secrets.APP_PRIVATE_IP }} << EOF
-                # Log in to ECR on target instance
-                aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin $REGISTRY
+            # Pull latest image
+            docker pull $REGISTRY/$REPOSITORY:latest
 
-                # Pull the newest image
-                docker pull $REGISTRY/$REPOSITORY:latest
+            # Restart Container 1 on Port 3000
+            docker rm -f app-instance-1 || true
+            docker run -d --name app-instance-1 --restart always -p 3000:80 $REGISTRY/$REPOSITORY:latest
 
-                # Stop and clean up old container if running
-                docker stop my-app || true
-                docker rm my-app || true
+            # Restart Container 2 on Port 3001
+            docker rm -f app-instance-2 || true
+            docker run -d --name app-instance-2 --restart always -p 3001:80 $REGISTRY/$REPOSITORY:latest
 
-                # Run the updated container
-                docker run -d --name my-app --restart always -p 80:80 $REGISTRY/$REPOSITORY:latest
+            # Clean up old unused Docker images
+            docker image prune -f
           EOF
